@@ -12,10 +12,16 @@ Die 10-in-10-Sekunden-Grenze gilt für alle, sonst droht 429.
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 SPERRE_NACH_429 = timedelta(hours=24)
 WOCHE = timedelta(days=7)
@@ -72,7 +78,46 @@ class ApiBudget:
     def anfordern(self, p: Prioritaet, jetzt: datetime) -> None:
         self.pruefen(p, jetzt)
         self._aufrufe.append(jetzt)
+        self._sichern()
 
     def gesperrt_melden(self, jetzt: datetime) -> None:
         """Nach HTTP 429 aufrufen. Danach 24 h keine Aufrufe, auch keine Sicherheits-Stopps."""
         self.gesperrt_bis = jetzt + SPERRE_NACH_429
+        self._sichern()
+
+    # --- Über Neustarts hinweg ------------------------------------------
+    # Sonst würde jede Absturzschleife das Budget neu beginnen lassen und Gardena mit
+    # Startprüfungen fluten. Die Datei wird bei jedem Aufruf atomar ersetzt.
+
+    datei: Path | None = None
+
+    @classmethod
+    def aus_datei(cls, datei: Path, **kw) -> "ApiBudget":
+        b = cls(datei=datei, **kw)
+        try:
+            daten = json.loads(datei.read_text(encoding="utf-8"))
+            b._aufrufe.extend(sorted(datetime.fromisoformat(t) for t in daten.get("aufrufe", [])))
+            if daten.get("gesperrt_bis"):
+                b.gesperrt_bis = datetime.fromisoformat(daten["gesperrt_bis"])
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError) as f:
+            # Vorsichtig: unlesbare Datei = Budget gilt als zur Hälfte verbraucht
+            log.error("Budget-Datei %s unlesbar (%s), rechne vorsichtig", datei, f)
+            jetzt = datetime.now(timezone.utc)
+            b._aufrufe.extend([jetzt] * (b.wochenlimit // 2))
+        return b
+
+    def _sichern(self) -> None:
+        if self.datei is None:
+            return
+        try:
+            self.datei.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.datei.with_suffix(".tmp")
+            tmp.write_text(json.dumps({
+                "aufrufe": [t.isoformat() for t in self._aufrufe],
+                "gesperrt_bis": self.gesperrt_bis.isoformat() if self.gesperrt_bis else None,
+            }), encoding="utf-8")
+            os.replace(tmp, self.datei)
+        except OSError as f:
+            log.error("Budget-Datei %s nicht schreibbar: %s", self.datei, f)

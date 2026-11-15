@@ -12,15 +12,19 @@ Gardena-API-Notizen: `docs/gardena-api.md`.
 
 | Ordner | Inhalt |
 | --- | --- |
-| `backend/` | Python-Paket `bewaesserung` (Gardena-Client, Orchestrator, Interlock, später Scheduler, REST-API, Wetter, Claude) |
+| `backend/src/bewaesserung/gardena/` | Gardena-Client, API-Budget, WebSocket, Gerätezustand |
+| `backend/src/bewaesserung/sicherheit/` | Kopplung, Orchestrator, Interlock, Startprüfung |
+| `backend/src/bewaesserung/planung/` | Regeln → Läufe (`plan.py`), Scheduler |
+| `backend/src/bewaesserung/speicher/` | SQLite (Zonen, Kopplungen, Regeln, Ausnahmen, run_log) |
+| `backend/src/bewaesserung/api/` | REST-API für die App (FastAPI, Token) |
 | `backend/tests/` | pytest, Sicherheitstests laufen gegen den Gardena-Mock (`tests/gardena_mock.py`) |
 | `deploy/systemd/` | `bewaesserung.service` (Type=notify, Restart=always, WatchdogSec=60) |
 | `deploy/pi-gen/` | eigene Stufe `stage-bewaesserung`, vorher `vorbereiten.sh` ausführen |
 | `deploy/firstboot/` | Einrichtungsseite für Zugangsdaten – noch leer |
 | `.github/workflows/` | `build-image.yml` (Tests, pi-gen-Build, .img als Release-Asset bei Tag `v*`) |
-
-Details zum Image: `deploy/README.md`.
 | `android/` | später: Kotlin/Compose-App |
+
+Details zum Image: `deploy/README.md`. Abweichungen vom Plan: `docs/entscheidungen.md`.
 
 ## Feste Entscheidungen
 
@@ -55,7 +59,7 @@ Wo die Regeln im Code stehen:
 | Regel | Ort |
 | --- | --- |
 | 1 | `gardena/client.py` kennt nur `starten(sekunden)`, kein `START_OVERRIDE` |
-| 2, 8 | `sicherheit/kopplung.py` (`Kopplung.laufzeiten`, `steckdosen_laufzeit`) |
+| 2, 8 | `sicherheit/kopplung.py` (`Kopplung.pruefen`, `steckdosen_laufzeit`); 8 zusätzlich beim Speichern in `api/app.py` |
 | 3, 4 | `sicherheit/orchestrator.py` (wartet auf `Geraetezustand`, nie auf die Befehlsantwort) |
 | 5, 7 (Erkennen) | `sicherheit/interlock.py` |
 | 6, 7 (Pausieren) | `sicherheit/startpruefung.py` |
@@ -71,6 +75,8 @@ Höchstens 700 REST-Aufrufe pro Woche und 10 in 10 Sekunden; bei HTTP 429 gilt d
 - REST nur für Befehle, Token, Geräteliste und WebSocket-Adresse.
 - Jeder REST-Aufruf geht durch `gardena/budget.py`. Sicherheits-Stopps haben Vorrang
   (Priorität `SICHERHEIT`), normale Läufe lassen eine Reserve übrig.
+- Der Zähler liegt in `<Datenordner>/api-budget.json` und übersteht Neustarts, damit eine
+  Absturzschleife das Budget nicht leerläuft.
 
 ## Arbeitsweise
 
@@ -89,11 +95,15 @@ Fertig (Aufgaben 1–4 der Übergabe): Repo-Gerüst, Gardena-Client (Token, Stan
 Befehle, API-Budget, WebSocket mit Reconnect), Gerätezustand mit Wartefunktion,
 Gardena-Mock, Orchestrator, Interlock-Wächter, Startprüfung mit Zeitplan-Pause und täglicher
 Erneuerung, Dienst-Einstieg `python -m bewaesserung` (`dienst.py`, sd_notify-Watchdog),
-systemd-Unit, pi-gen-Stufe, GitHub-Actions-Workflow. Der Image-Build ist noch nie gelaufen.
+systemd-Unit, pi-gen-Stufe, GitHub-Actions-Workflow.
+Aus Aufgabe 5 (Phase 2 des Plans): SQLite-Speicher, Zeitplan-Expansion mit Sommerzeit,
+Scheduler mit Nachholfenster, Not-Aus, REST-API mit Token, Sicherheitsereignisse im run_log.
 
-Als Nächstes:
-5. Scheduler, SQLite (Datenmodell siehe Plan; ersetzt `kopplungen.json`), REST-API für die App,
-   Einrichtungsseite (`deploy/firstboot`), Wetter, Claude-Assistent, Android-App.
+Als Nächstes (Rest von Aufgabe 5):
+- Wetter (Phase 4): Open-Meteo, Bright Sky, Bodensensor → `planung.scheduler.Wetter`, Tabelle `weather_policy`.
+- Claude-Assistent (Phase 5): Saisonplan-Entwurf, Validierung, Regeln mit `quelle=CLAUDE`.
+- Einrichtungsseite (`deploy/firstboot`), Push-Meldungen (ntfy).
+- Android-App (Phase 3), spricht die API unter `/openapi.json`.
 
 In Phase 0 am echten System klären: siehe ⚠ in `docs/gardena-api.md`.
 

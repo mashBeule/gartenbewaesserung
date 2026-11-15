@@ -14,7 +14,8 @@
 - Raspberry Pi OS Lite 64 Bit (trixie, pi-gen-Branch `arm64`), Hostname `bewaesserung`,
   Zeitzone Europe/Berlin, deutsche Tastatur.
 - `/opt/bewaesserung/venv` mit dem Paket `bewaesserung`, Systembenutzer `bewaesserung`,
-  Daten in `/var/lib/bewaesserung` (Kopplungen bis zur SQLite-Umstellung in `kopplungen.json`).
+  Daten in `/var/lib/bewaesserung`: `bewaesserung.sqlite3` (Zonen, Kopplungen, Zeitpläne, Verlauf)
+  und `api-budget.json` (Gardena-Aufrufzähler, übersteht Neustarts).
 - Dienst `bewaesserung.service` aktiviert, dazu `systemd-time-wait-sync` (Uhrzeit vor dem Start).
 - Tailscale installiert, **nicht angemeldet**. log2ram installiert.
 - **Keine Zugangsdaten.** Benutzer, Passwort, WLAN und SSH setzt der Raspberry Pi Imager.
@@ -25,7 +26,11 @@
 2. Per SSH anmelden, Zugangsdaten eintragen:
    `sudo cp /etc/bewaesserung/zugang.env.beispiel /etc/bewaesserung/zugang.env`,
    Werte eintragen, `sudo chmod 600 /etc/bewaesserung/zugang.env`.
+   Für die App zusätzlich `BEWAESSERUNG_API_TOKEN` (z. B. `openssl rand -hex 24`) und
+   `BEWAESSERUNG_API_HOST` = Tailscale-Adresse des Pi (`tailscale ip -4`).
 3. `sudo tailscale up`, dann `sudo systemctl restart bewaesserung`.
+   Die API ist danach nur über Tailscale erreichbar: `http://<tailscale-ip>:8080/status`
+   mit `Authorization: Bearer <Token>`; Beschreibung unter `/openapi.json`.
 4. Prüfen: `systemctl status bewaesserung` zeigt den Status („Startprüfung läuft“, „Bereit …“),
    `journalctl -u bewaesserung -f` die Meldungen.
 

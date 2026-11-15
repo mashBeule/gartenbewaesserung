@@ -27,3 +27,6 @@ android/.idea/
 
 # Von deploy/pi-gen/vorbereiten.sh erzeugt
 deploy/pi-gen/stage-bewaesserung/01-anwendung/files/
+
+# Lokal abgelegte CI-Logs
+logs/

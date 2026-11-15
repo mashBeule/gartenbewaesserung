@@ -1,36 +1,47 @@
-"""Dienst-Einstieg: Konfiguration, Kopplungsdatei, sd_notify, Wiederholung der Startprüfung."""
+"""Dienst-Einstieg: Konfiguration, Budget-Datei, sd_notify, Wiederholung der Startprüfung."""
 from __future__ import annotations
 
 import asyncio
-import json
-
-import pytest
+from datetime import datetime, timedelta, timezone
 
 from bewaesserung.dienst import betreiben, startpruefung_bis_bestanden
-from bewaesserung.konfiguration import Konfiguration, KonfigurationFehler, kopplungen_laden
+from bewaesserung.gardena.budget import ApiBudget, Prioritaet
+from bewaesserung.konfiguration import Konfiguration
 from bewaesserung.systemd import SystemdMelder
 from conftest import Aufbau, ausfuehren
 
 
-def test_konfiguration_standard_ist_trockenlauf(tmp_path):
+def test_konfiguration_standard_ist_trockenlauf_und_api_aus(tmp_path):
     k = Konfiguration.aus_umgebung({"BEWAESSERUNG_DATEN": str(tmp_path)})
-    assert k.trockenlauf and not k.zugang_vollstaendig
+    assert k.trockenlauf and not k.zugang_vollstaendig and not k.api_aktiv
+    assert k.api_host == "127.0.0.1"
     k = Konfiguration.aus_umgebung({"GARDENA_APPLICATION_KEY": "a", "GARDENA_APPLICATION_SECRET": "b",
-                                    "GARDENA_DRY_RUN": "false"})
-    assert k.zugang_vollstaendig and not k.trockenlauf
+                                    "GARDENA_DRY_RUN": "false", "BEWAESSERUNG_API_TOKEN": "x" * 24})
+    assert k.zugang_vollstaendig and not k.trockenlauf and k.api_aktiv
 
 
-def test_kopplungen_laden(tmp_path):
-    datei = tmp_path / "kopplungen.json"
-    assert kopplungen_laden(datei) == []
-    eintrag = {"id": "rasen", "ventil_id": "v:1", "steckdose_id": "s:1",
-               "vorlauf_ventil_s": 20, "nachlauf_ventil_s": 30, "max_laufzeit_s": 1800}
-    datei.write_text(json.dumps([eintrag]), encoding="utf-8")
-    assert kopplungen_laden(datei)[0].max_laufzeit_s == 1800
-    for kaputt in ("{", json.dumps([{**eintrag, "extra": 1}]), json.dumps([eintrag, eintrag]), json.dumps({})):
-        datei.write_text(kaputt, encoding="utf-8")
-        with pytest.raises(KonfigurationFehler):
-            kopplungen_laden(datei)
+def test_api_nie_auf_allen_adressen_oder_mit_kurzem_token():
+    assert not Konfiguration.aus_umgebung({"BEWAESSERUNG_API_TOKEN": "x" * 24, "BEWAESSERUNG_API_HOST": "0.0.0.0"}).api_aktiv
+    assert not Konfiguration.aus_umgebung({"BEWAESSERUNG_API_TOKEN": "kurz"}).api_aktiv
+
+
+def test_budget_ueberlebt_neustart(tmp_path):
+    datei = tmp_path / "api-budget.json"
+    jetzt = datetime.now(timezone.utc)
+    b = ApiBudget.aus_datei(datei)
+    for i in range(5):
+        b.anfordern(Prioritaet.SYSTEM, jetzt + timedelta(seconds=i))
+    b.gesperrt_melden(jetzt)
+    neu = ApiBudget.aus_datei(datei)
+    assert neu.verbraucht(jetzt + timedelta(seconds=10)) == 5
+    assert neu.gesperrt_bis == jetzt + timedelta(hours=24)
+
+
+def test_kaputte_budget_datei_rechnet_vorsichtig(tmp_path):
+    datei = tmp_path / "api-budget.json"
+    datei.write_text("{kaputt", encoding="utf-8")
+    b = ApiBudget.aus_datei(datei)
+    assert b.verbraucht(datetime.now(timezone.utc)) == 350
 
 
 def test_systemd_melder_ohne_socket_tut_nichts():
@@ -56,6 +67,7 @@ def test_ohne_zugangsdaten_wird_nichts_geschaltet(tmp_path):
         assert "Zugangsdaten" in m.meldungen[0]
         ende.set()
         await lauf
+        assert not (tmp_path / "bewaesserung.sqlite3").exists()
     ausfuehren(szenario())
 
 

@@ -16,8 +16,8 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"   # wie Raspberry Pi OS trixie
       - name: Backend installieren
@@ -29,12 +29,22 @@ jobs:
   image:
     needs: tests
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # Fest auf 24.04 statt ubuntu-latest (26.04), auf dem pi-gen-action noch nicht erprobt ist.
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
       contents: write   # für das Release-Asset bei Tags
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      # Eigenes Aufräumen statt increase-runner-disk-size der Action: deren apt-Schritt
+      # scheiterte mit Exit-Code 100. Hier nur Löschen, Fehler brechen den Build nicht ab.
+      - name: Platz auf dem Runner schaffen
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup                       /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost || true
+          sudo docker image prune --all --force || true
+          df -h /
 
       - name: pi-gen-Stufe vorbereiten
         run: bash deploy/pi-gen/vorbereiten.sh
@@ -57,10 +67,10 @@ jobs:
           # nie dieser Workflow.
           enable-cloud-init: 1
           compression: xz
-          increase-runner-disk-size: true
+          increase-runner-disk-size: false
 
       - name: Image als Artefakt ablegen
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bewaesserung-image
           path: ${{ steps.build.outputs.image-path }}

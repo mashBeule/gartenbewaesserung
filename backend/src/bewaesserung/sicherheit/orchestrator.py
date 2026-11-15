@@ -123,7 +123,7 @@ class Orchestrator:
     def aktive_laeufe(self) -> list[str]:
         return list(self._aktiv)
 
-    async def _stoppen(self, k: Kopplung, geraet_id: str, typ: GeraeteTyp) -> bool:
+    async def _stoppen(self, k: Kopplung | None, geraet_id: str, typ: GeraeteTyp) -> bool:
         try:
             await self.befehle.stoppen(geraet_id, typ)
             return True
@@ -264,6 +264,17 @@ class Orchestrator:
         async with lauf.sperre:          # wartet, falls gerade die Steckdose gestartet wird
             await self._abbruch_sequenz(lauf)
         return True
+
+    async def not_aus(self, grund: str = "Not-Aus") -> None:
+        """Alle Läufe abbrechen, danach alles, was noch läuft, stoppen: Steckdosen vor Ventilen."""
+        await asyncio.gather(*(self.abbrechen(kid, grund) for kid in list(self._aktiv)))
+        geraete = self.zustand.geraete()
+        for g in geraete:
+            if g.typ is GeraeteTyp.STECKDOSE and g.aktivitaet != "OFF":
+                await self._stoppen(None, g.id, GeraeteTyp.STECKDOSE)
+        for g in geraete:
+            if g.ventil_offen:
+                await self._stoppen(None, g.id, GeraeteTyp.VENTIL)
 
     async def _abbruch_sequenz(self, lauf: _Lauf) -> None:
         """Steckdose aus, Bestätigung abwarten, erst dann Ventil zu."""

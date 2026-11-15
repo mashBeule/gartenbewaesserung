@@ -3,7 +3,8 @@ Description=Bewässerungssteuerung (Gardena smart system)
 Documentation=https://github.com/mashBeule/gartenbewaesserung
 # Erst starten, wenn Netz und Uhrzeit stehen (Zeitpläne, Sommerzeit)
 Wants=network-online.target time-sync.target
-After=network-online.target time-sync.target
+# Für die API auf der Tailscale-Adresse (ohne Tailscale: API wartet und versucht es erneut)
+After=network-online.target time-sync.target tailscaled.service
 # Nie aufgeben: nach jedem Absturz neu starten
 StartLimitIntervalSec=0
 
@@ -14,7 +15,7 @@ User=bewaesserung
 Group=bewaesserung
 ExecStart=/opt/bewaesserung/venv/bin/python -m bewaesserung
 Restart=always
-RestartSec=10
+RestartSec=30
 # Der Dienst meldet sich alle 30 s; bleibt das aus, startet systemd ihn neu.
 WatchdogSec=60
 TimeoutStartSec=120
