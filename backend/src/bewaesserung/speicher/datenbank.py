@@ -1,21 +1,22 @@
 """SQLite-Speicher. Synchron und klein; läuft im Thread der Ereignisschleife.
 
-Tabellen laut Plan: zone, coupling, schedule_rule, schedule_exception, run_log.
-(`device` ist der Gerätezustand aus dem WebSocket und liegt nur im Speicher;
-`weather_policy` kommt mit der Wetter-Anbindung.) Das Schema wird über
-`PRAGMA user_version` versioniert, damit spätere Änderungen als Migration laufen.
+Tabellen laut Plan: zone, coupling, schedule_rule, schedule_exception, weather_policy, run_log,
+dazu `einstellung` (Schlüssel/Wert, z. B. Standort). `device` ist der Gerätezustand aus dem
+WebSocket und liegt nur im Speicher. Das Schema wird über `PRAGMA user_version` versioniert;
+jede Version ist eine Migration in `MIGRATIONEN`.
 """
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 from ..planung.plan import Ausnahme, AusnahmeAktion, Quelle, Regel
 from ..sicherheit.kopplung import Kopplung
+from ..wetter.entscheidung import WetterRegel
 
-SCHEMA_VERSION = 1
 
 SCHEMA = """
 CREATE TABLE zone (
@@ -65,6 +66,33 @@ CREATE TABLE run_log (
 CREATE INDEX run_log_zeit ON run_log (zeitpunkt);
 """
 
+SCHEMA_2 = """
+CREATE TABLE weather_policy (
+    id INTEGER PRIMARY KEY,
+    zone_id INTEGER REFERENCES zone(id) ON DELETE CASCADE,   -- NULL = global
+    aktiv INTEGER NOT NULL,
+    regen_schwelle_mm REAL NOT NULL,
+    prognose_schwelle_mm REAL NOT NULL,
+    prognose_wahrscheinlichkeit_pct INTEGER NOT NULL,
+    zeitfenster_h INTEGER NOT NULL,
+    frost_grenze_c REAL NOT NULL,
+    bodenfeuchte_schwelle_pct REAL,
+    sensor_id TEXT,
+    skalierung_aktiv INTEGER NOT NULL,
+    referenz_et0_mm_tag REAL NOT NULL,
+    faktor_min REAL NOT NULL,
+    faktor_max REAL NOT NULL
+);
+CREATE UNIQUE INDEX weather_policy_zone ON weather_policy (IFNULL(zone_id, 0));
+CREATE TABLE einstellung (
+    schluessel TEXT PRIMARY KEY,
+    wert TEXT NOT NULL
+);
+"""
+
+MIGRATIONEN = (SCHEMA, SCHEMA_2)          # Index + 1 = Schema-Version
+SCHEMA_VERSION = len(MIGRATIONEN)
+
 
 @dataclass(frozen=True)
 class Zone:
@@ -103,11 +131,21 @@ class Speicher:
 
     def _migrieren(self) -> None:
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version == 0:
-            with self.db:
-                self.db.executescript("BEGIN;" + SCHEMA + f"PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;")
-        elif version > SCHEMA_VERSION:
+        if version > SCHEMA_VERSION:
             raise RuntimeError(f"Datenbank hat Schema {version}, Programm kennt nur {SCHEMA_VERSION}")
+        for neu in range(version + 1, SCHEMA_VERSION + 1):
+            self.db.executescript("BEGIN;" + MIGRATIONEN[neu - 1] + f"PRAGMA user_version = {neu}; COMMIT;")
+
+    @contextmanager
+    def _transaktion(self):
+        """Autocommit ist an (isolation_level=None); mehrere Schritte daher explizit klammern."""
+        self.db.execute("BEGIN")
+        try:
+            yield
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        self.db.execute("COMMIT")
 
     def schliessen(self) -> None:
         self.db.close()
@@ -267,3 +305,75 @@ class Speicher:
         bedingung = "WHERE sicherheitsereignis IS NOT NULL" if nur_sicherheit else ""
         zeilen = self.db.execute(f"SELECT * FROM run_log {bedingung} ORDER BY zeitpunkt DESC, id DESC LIMIT ?", (limit,))
         return [Protokolleintrag(**{**dict(r), "zeitpunkt": datetime.fromisoformat(r["zeitpunkt"])}) for r in zeilen]
+
+
+    def letzte_bewaesserung(self, zone_id: int) -> datetime | None:
+        """Ende des letzten Laufs dieser Zone, der wirklich Wasser gegeben hat."""
+        r = self.db.execute("SELECT zeitpunkt, tatsaechlich_s FROM run_log WHERE zone_id = ? AND tatsaechlich_s > 0 "
+                            "ORDER BY zeitpunkt DESC LIMIT 1", (zone_id,)).fetchone()
+        if r is None:
+            return None
+        return datetime.fromisoformat(r["zeitpunkt"]) + timedelta(seconds=r["tatsaechlich_s"])
+
+    def protokoll_zu_terminen(self, schluessel: list[str]) -> dict[str, Protokolleintrag]:
+        if not schluessel:
+            return {}
+        platzhalter = ", ".join("?" for _ in schluessel)
+        zeilen = self.db.execute(f"SELECT * FROM run_log WHERE plan_schluessel IN ({platzhalter})", tuple(schluessel))
+        return {r["plan_schluessel"]: Protokolleintrag(**{**dict(r), "zeitpunkt": datetime.fromisoformat(r["zeitpunkt"])})
+                for r in zeilen}
+
+    # --- Wetterregeln ----------------------------------------------------
+
+    @staticmethod
+    def _wetterregel(r: sqlite3.Row) -> WetterRegel:
+        d = dict(r)
+        d.pop("id")
+        for feld in ("aktiv", "skalierung_aktiv"):
+            d[feld] = bool(d[feld])
+        return WetterRegel(**d)
+
+    def wetterregeln(self) -> list[WetterRegel]:
+        return [self._wetterregel(r) for r in
+                self.db.execute("SELECT * FROM weather_policy ORDER BY IFNULL(zone_id, 0)")]
+
+    def wetterregel(self, zone_id: int | None) -> WetterRegel | None:
+        """Gespeicherte Regel genau dieser Zone (None = global), ohne Rückfall."""
+        r = self.db.execute("SELECT * FROM weather_policy WHERE IFNULL(zone_id, 0) = ?", (zone_id or 0,)).fetchone()
+        return self._wetterregel(r) if r else None
+
+    def wetterregel_fuer(self, zone_id: int) -> WetterRegel:
+        """Gültige Regel einer Zone: eigene, sonst globale, sonst Startwerte."""
+        return self.wetterregel(zone_id) or self.wetterregel(None) or WetterRegel()
+
+    def wetterregel_setzen(self, regel: WetterRegel) -> WetterRegel:
+        werte = asdict(regel)
+        for feld in ("aktiv", "skalierung_aktiv"):
+            werte[feld] = int(werte[feld])
+        with self._transaktion():
+            self.db.execute("DELETE FROM weather_policy WHERE IFNULL(zone_id, 0) = ?", (regel.zone_id or 0,))
+            self._einfuegen("weather_policy", werte)
+        return self.wetterregel(regel.zone_id)
+
+    def wetterregel_loeschen(self, zone_id: int | None) -> bool:
+        return self.db.execute("DELETE FROM weather_policy WHERE IFNULL(zone_id, 0) = ?",
+                               (zone_id or 0,)).rowcount == 1
+
+    # --- Einstellungen ---------------------------------------------------
+
+    def einstellung(self, schluessel: str) -> str | None:
+        r = self.db.execute("SELECT wert FROM einstellung WHERE schluessel = ?", (schluessel,)).fetchone()
+        return r["wert"] if r else None
+
+    def einstellung_setzen(self, schluessel: str, wert: str) -> None:
+        self.db.execute("INSERT INTO einstellung (schluessel, wert) VALUES (?, ?) "
+                        "ON CONFLICT (schluessel) DO UPDATE SET wert = excluded.wert", (schluessel, wert))
+
+    def standort(self) -> tuple[float, float] | None:
+        breite, laenge = self.einstellung("standort_breite"), self.einstellung("standort_laenge")
+        return (float(breite), float(laenge)) if breite is not None and laenge is not None else None
+
+    def standort_setzen(self, breite: float, laenge: float) -> None:
+        with self._transaktion():
+            self.einstellung_setzen("standort_breite", repr(float(breite)))
+            self.einstellung_setzen("standort_laenge", repr(float(laenge)))

@@ -15,7 +15,8 @@ Gardena-API-Notizen: `docs/gardena-api.md`.
 | `backend/src/bewaesserung/gardena/` | Gardena-Client, API-Budget, WebSocket, Gerätezustand |
 | `backend/src/bewaesserung/sicherheit/` | Kopplung, Orchestrator, Interlock, Startprüfung |
 | `backend/src/bewaesserung/planung/` | Regeln → Läufe (`plan.py`), Scheduler |
-| `backend/src/bewaesserung/speicher/` | SQLite (Zonen, Kopplungen, Regeln, Ausnahmen, run_log) |
+| `backend/src/bewaesserung/speicher/` | SQLite (Zonen, Kopplungen, Regeln, Ausnahmen, Wetterregeln, Einstellungen, run_log) |
+| `backend/src/bewaesserung/wetter/` | Open-Meteo, Bright Sky, Entscheidung je Termin (`entscheidung.py`, reine Logik), Dienst mit stündlichem Abruf |
 | `backend/src/bewaesserung/api/` | REST-API für die App (FastAPI, Token) |
 | `backend/tests/` | pytest, Sicherheitstests laufen gegen den Gardena-Mock (`tests/gardena_mock.py`) |
 | `deploy/systemd/` | `bewaesserung.service` (Type=notify, Restart=always, WatchdogSec=60) |
@@ -98,9 +99,11 @@ Erneuerung, Dienst-Einstieg `python -m bewaesserung` (`dienst.py`, sd_notify-Wat
 systemd-Unit, pi-gen-Stufe, GitHub-Actions-Workflow.
 Aus Aufgabe 5 (Phase 2 des Plans): SQLite-Speicher, Zeitplan-Expansion mit Sommerzeit,
 Scheduler mit Nachholfenster, Not-Aus, REST-API mit Token, Sicherheitsereignisse im run_log.
+Wetter (Phase 4): Open-Meteo und Bright Sky stündlich, Bodensensor aus dem WebSocket, Regeln 1–5 des
+Plans in `wetter/entscheidung.py`, `weather_policy` global und je Zone, Vorschau im Kalender,
+Endpunkte `/wetter`, `/wetterregeln`, `/einstellungen/standort`.
 
 Als Nächstes (Rest von Aufgabe 5):
-- Wetter (Phase 4): Open-Meteo, Bright Sky, Bodensensor → `planung.scheduler.Wetter`, Tabelle `weather_policy`.
 - Claude-Assistent (Phase 5): Saisonplan-Entwurf, Validierung, Regeln mit `quelle=CLAUDE`.
 - Einrichtungsseite (`deploy/firstboot`), Push-Meldungen (ntfy).
 - Android-App (Phase 3), spricht die API unter `/openapi.json`.

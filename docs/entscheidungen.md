@@ -14,3 +14,9 @@ Jede Zeile kann der Projektinhaber zurückdrehen.
 | Laufzeiten | – | Vielfache von 60 s, Nachlauf mindestens 10 s | ⚠ Schrittweite der API in Phase 0 prüfen |
 | Startprüfung | – | jeder Fehler sperrt alle Läufe | einfacher und sicherer als Sperre je Kopplung |
 | API-Pfade | – | deutsche Pfade (`/zonen`, `/regeln`, `/plan`, `/notaus` …), OpenAPI unter `/openapi.json` | einheitlich mit den Fachbegriffen |
+| Wetter: Zeitpunkt der Entscheidung | 30 min vorher entscheiden, direkt vor dem Start prüfen | eine Entscheidung direkt vor dem Start mit den stündlich abgerufenen Daten und dem aktuellen Bodenwert; Vorschau für die nächsten 24 h im Kalender | gleiches Ergebnis, ein Rechenweg weniger |
+| Wetter: Frost | „prognostizierte Tiefsttemperatur“ | Minimum von 1 h vor bis `zeitfenster_h` nach dem Start | Zeitraum war offen |
+| Wetter: Regel je Zone | – | eine Zonen-Regel ersetzt die globale vollständig (kein Mischen einzelner Felder) | einfacher in App und Datenbank |
+| Wetter: Skalierung | ET₀ seit letztem Lauf | Zeitraum seit Ende der letzten echten Bewässerung, höchstens 7 Tage; ohne Lauf 24 h; Referenz 4 mm/Tag; nie über die Höchstlaufzeit | 7 Tage reicht die Open-Meteo-Vergangenheit |
+| Wetter: Ausfall | Daten älter als 12 h → Faktor 1,0 | so umgesetzt; ohne Bright Sky zählen für „Regen 24 h“ die Modellwerte von Open-Meteo; ein Fehler in der Wetterauswertung lässt den Termin unverändert laufen | Wetter darf Läufe kürzen, aber nie aus Versehen alle verhindern |
+| Standort | Einstellungen in der App | Tabelle `einstellung`, `PUT /einstellungen/standort`; an die Wetterdienste nur auf 2 Nachkommastellen (~1 km) gerundet | kein genauer Standort nach außen |

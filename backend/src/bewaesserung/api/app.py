@@ -7,6 +7,10 @@ antwortet sie mit 503. Die OpenAPI-Beschreibung für die App liegt unter /openap
 Die App schaltet nie direkt: Manuelle Läufe und Not-Aus gehen über Scheduler und Orchestrator,
 alle Sicherheitsregeln gelten genauso. Längere Laufzeiten als die Höchstlaufzeit der Kopplung
 lehnt die API schon beim Speichern einer Regel ab (Regel 8).
+
+Wetter: `/wetter` (aktuelle Lage), `/wetterregeln` (global und je Zone), `/einstellungen/standort`.
+Im Kalender (`/plan`) tragen Termine der nächsten 24 h die voraussichtliche Wetterentscheidung,
+vergangene Termine ihren Status aus dem Verlauf.
 """
 from __future__ import annotations
 
@@ -25,8 +29,11 @@ from ..planung.scheduler import LaufNichtMoeglich, Scheduler
 from ..sicherheit.kopplung import Kopplung, LaufAbgelehnt
 from ..sicherheit.orchestrator import Orchestrator
 from ..speicher.datenbank import Speicher
+from ..wetter.dienst import WetterDienst
+from ..wetter.entscheidung import WetterRegel
 
 MAX_PLAN_TAGE = 62
+WETTER_VORSCHAU = timedelta(hours=24)
 
 
 @dataclass
@@ -37,6 +44,7 @@ class Kontext:
     scheduler: Scheduler
     token: str | None
     trockenlauf: bool = True
+    wetter: WetterDienst | None = None
 
 
 # --- Modelle -------------------------------------------------------------
@@ -101,6 +109,43 @@ class LaufAus(BaseModel):
     dauer_s: int
     ausgelassen: bool
     hinweis: str
+    wetter_faktor: float | None = Field(default=None, description="Vorschau für die nächsten 24 h; 0 = fällt aus")
+    wetter_hinweis: str | None = None
+    status: str | None = Field(default=None, description="Status aus dem Verlauf, wenn der Termin schon behandelt ist")
+    tatsaechlich_s: float | None = None
+
+
+class WetterLageAus(BaseModel):
+    standort_gesetzt: bool
+    prognose_stand: datetime | None
+    messung_stand: datetime | None
+    veraltet: bool
+    fehler: list[str]
+    regen_24h_mm: float | None
+    regen_prognose_12h_mm: float | None
+    tiefsttemperatur_12h_c: float | None
+    et0_24h_mm: float | None
+
+
+class WetterRegelEin(BaseModel):
+    zone_id: int | None = Field(default=None, description="None = globale Regel")
+    aktiv: bool = True
+    regen_schwelle_mm: float = 5.0
+    prognose_schwelle_mm: float = 4.0
+    prognose_wahrscheinlichkeit_pct: int = 70
+    zeitfenster_h: int = 12
+    frost_grenze_c: float = 2.0
+    bodenfeuchte_schwelle_pct: float | None = None
+    sensor_id: str | None = None
+    skalierung_aktiv: bool = True
+    referenz_et0_mm_tag: float = 4.0
+    faktor_min: float = 0.3
+    faktor_max: float = 1.5
+
+
+class StandortEin(BaseModel):
+    breite: float = Field(ge=-90, le=90)
+    laenge: float = Field(ge=-180, le=180)
 
 
 class GeraetAus(BaseModel):
@@ -122,6 +167,7 @@ class StatusAus(BaseModel):
     aktive_laeufe: list[str]
     warteschlange: int
     naechste_laeufe: list[LaufAus]
+    wetter: WetterLageAus | None = None
 
 
 class ProtokollAus(BaseModel):
@@ -195,6 +241,26 @@ def app_bauen(k: Kontext) -> FastAPI:
         except LaufAbgelehnt as f:
             raise ungueltig(str(f))
 
+    def laeufe_aus(liste) -> list[LaufAus]:
+        jetzt = k.scheduler.jetzt()
+        erledigt = k.speicher.protokoll_zu_terminen([l.schluessel for l in liste])
+        aus = []
+        for l in liste:
+            zusatz = {}
+            if (e := erledigt.get(l.schluessel)) is not None:
+                zusatz = {"status": e.status, "tatsaechlich_s": e.tatsaechlich_s}
+            elif k.wetter is not None and not l.ausgelassen and jetzt <= l.start <= jetzt + WETTER_VORSCHAU:
+                try:
+                    w = k.wetter.entscheidung(l.zone_id, l.start)
+                    zusatz = {"wetter_faktor": w.faktor, "wetter_hinweis": w.text or None}
+                except Exception as f:
+                    zusatz = {"wetter_hinweis": f"Wetter nicht auswertbar: {f}"}
+            aus.append(LaufAus(**asdict(l), **zusatz))
+        return aus
+
+    def wetter_lage() -> WetterLageAus | None:
+        return WetterLageAus(**asdict(k.wetter.lage())) if k.wetter is not None else None
+
     def schreiben(aktion):
         try:
             return aktion()
@@ -208,7 +274,7 @@ def app_bauen(k: Kontext) -> FastAPI:
         return StatusAus(
             verbunden=k.zustand.verbunden, freigegeben=k.orchestrator.freigegeben, trockenlauf=k.trockenlauf,
             aktive_laeufe=k.orchestrator.aktive_laeufe, warteschlange=len(k.scheduler.warteschlange),
-            naechste_laeufe=[LaufAus(**asdict(l)) for l in k.scheduler.naechste()])
+            naechste_laeufe=laeufe_aus(k.scheduler.naechste()), wetter=wetter_lage())
 
     @app.get("/geraete", response_model=list[GeraetAus], dependencies=geschuetzt)
     async def geraete():
@@ -342,11 +408,59 @@ def app_bauen(k: Kontext) -> FastAPI:
     async def plan(von: date, bis: date):
         if bis < von or (bis - von) > timedelta(days=MAX_PLAN_TAGE):
             raise ungueltig(f"Zeitraum muss 0 bis {MAX_PLAN_TAGE} Tage umfassen")
-        return [LaufAus(**asdict(l)) for l in k.scheduler.plan(von, bis)]
+        return laeufe_aus(k.scheduler.plan(von, bis))
 
     @app.get("/verlauf", response_model=list[ProtokollAus], dependencies=geschuetzt)
     async def verlauf(limit: int = Query(100, ge=1, le=1000), nur_sicherheit: bool = False):
         return [ProtokollAus(**asdict(e)) for e in k.speicher.protokoll(limit, nur_sicherheit)]
+
+    # --- Wetter ----------------------------------------------------------
+
+    @app.get("/wetter", response_model=WetterLageAus, dependencies=geschuetzt)
+    async def wetter():
+        if k.wetter is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Wetter-Dienst läuft nicht")
+        return wetter_lage()
+
+    @app.get("/einstellungen/standort", response_model=StandortEin, dependencies=geschuetzt)
+    async def standort():
+        s = k.speicher.standort()
+        if s is None:
+            raise nicht_gefunden("Standort")
+        return StandortEin(breite=s[0], laenge=s[1])
+
+    @app.put("/einstellungen/standort", response_model=StandortEin, dependencies=geschuetzt)
+    async def standort_setzen(s: StandortEin):
+        k.speicher.standort_setzen(s.breite, s.laenge)
+        if k.wetter is not None:
+            k.wetter.wecken()
+        return s
+
+    @app.get("/wetterregeln", response_model=list[WetterRegelEin], dependencies=geschuetzt)
+    async def wetterregeln():
+        """Gespeicherte Regeln; ohne globale Zeile gelten die Startwerte (zone_id = null)."""
+        regeln = k.speicher.wetterregeln()
+        if not any(r.zone_id is None for r in regeln):
+            regeln.insert(0, WetterRegel())
+        return [WetterRegelEin(**asdict(r)) for r in regeln]
+
+    @app.put("/wetterregeln", response_model=WetterRegelEin, dependencies=geschuetzt)
+    async def wetterregel_setzen(w: WetterRegelEin):
+        regel = WetterRegel(**w.model_dump())
+        fehler = regel.fehler()
+        if fehler:
+            raise ungueltig("; ".join(fehler))
+        if regel.zone_id is not None and k.speicher.zone(regel.zone_id) is None:
+            raise ungueltig(f"Zone {regel.zone_id} gibt es nicht")
+        if regel.sensor_id is not None:
+            geraetetyp_pruefen(regel.sensor_id, GeraeteTyp.SENSOR)
+        return WetterRegelEin(**asdict(k.speicher.wetterregel_setzen(regel)))
+
+    @app.delete("/wetterregeln/zone/{zone_id}", status_code=204, dependencies=geschuetzt)
+    async def wetterregel_loeschen(zone_id: int):
+        """Zone fällt auf die globale Regel zurück."""
+        if not k.speicher.wetterregel_loeschen(zone_id):
+            raise nicht_gefunden("Wetterregel")
 
     # --- Schalten --------------------------------------------------------
 

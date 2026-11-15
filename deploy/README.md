@@ -31,7 +31,10 @@
 3. `sudo tailscale up`, dann `sudo systemctl restart bewaesserung`.
    Die API ist danach nur über Tailscale erreichbar: `http://<tailscale-ip>:8080/status`
    mit `Authorization: Bearer <Token>`; Beschreibung unter `/openapi.json`.
-4. Prüfen: `systemctl status bewaesserung` zeigt den Status („Startprüfung läuft“, „Bereit …“),
+4. Standort für das Wetter setzen (bis die App das kann):
+   `curl -X PUT -H "Authorization: Bearer <Token>" -H "Content-Type: application/json" -d '{"breite": 51.1, "laenge": 13.6}' http://<tailscale-ip>:8080/einstellungen/standort`.
+   Ohne Standort laufen alle Termine ohne Wetteranpassung.
+5. Prüfen: `systemctl status bewaesserung` zeigt den Status („Startprüfung läuft“, „Bereit …“),
    `journalctl -u bewaesserung -f` die Meldungen.
 
 Ohne `zugang.env` läuft der Dienst, meldet „Warte auf Zugangsdaten“ und schaltet nichts.

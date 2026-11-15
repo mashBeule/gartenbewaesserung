@@ -9,7 +9,9 @@ jedes Mal frisch aus SQLite, damit Änderungen aus der App sofort gelten, und is
 - Läufe laufen nacheinander (ob mehrere Ventile gleichzeitig dürfen, ist noch offen).
 - Ein Termin, der länger als `nachholfenster` nicht starten konnte (Pi aus, Startprüfung
   nicht bestanden, vorheriger Lauf), wird als VERPASST protokolliert und nicht nachgeholt.
-- Ein Wetter-Baustein kann die Dauer skalieren oder den Lauf aussetzen (Schnittstelle `Wetter`).
+- Ein Wetter-Baustein kann die Dauer skalieren oder den Lauf aussetzen (Schnittstelle `Wetter`,
+  umgesetzt in `wetter/dienst.py`). Hochskaliert wird höchstens bis zur Höchstlaufzeit (Regel 8);
+  wirft die Wetterentscheidung einen Fehler, läuft der Termin unverändert.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Protocol
 from zoneinfo import ZoneInfo
 
-from ..sicherheit.kopplung import LaufAbgelehnt, abrunden
+from ..sicherheit.kopplung import SEKUNDEN_SCHRITT, LaufAbgelehnt, abrunden
 from ..sicherheit.orchestrator import Orchestrator
 from ..speicher.datenbank import Speicher
 from .plan import ORTSZEIT, GeplanterLauf, laeufe
@@ -72,6 +74,9 @@ class Scheduler:
             except Exception:
                 log.exception("Scheduler: Takt fehlgeschlagen")
             await self._schlafen(self.takt_s)
+
+    def jetzt(self) -> datetime:
+        return self._uhr()
 
     def plan(self, von, bis) -> list[GeplanterLauf]:
         return laeufe(self.speicher.regeln(), self.speicher.ausnahmen(), von, bis, self.tz)
@@ -136,12 +141,23 @@ class Scheduler:
         try:
             dauer_s, text = l.dauer_s, l.hinweis
             if self.wetter is not None:
-                faktor, begruendung = self.wetter.faktor(l.zone_id, l.start)
-                dauer_s = abrunden(dauer_s * faktor)
+                try:
+                    faktor, begruendung = self.wetter.faktor(l.zone_id, l.start)
+                except Exception as f:                # Wetter darf einen Lauf nie verhindern
+                    log.exception("Wetterentscheidung fehlgeschlagen")
+                    faktor, begruendung = 1.0, f"Wetter nicht auswertbar ({f}), Dauer unverändert"
                 text = "; ".join(t for t in (text, begruendung) if t)
-                if dauer_s <= 0:
+                if faktor <= 0:
                     self._abschliessen(l, "UEBERSPRUNGEN_WETTER", text)
                     return
+                dauer_s = max(SEKUNDEN_SCHRITT, abrunden(dauer_s * faktor))
+                try:
+                    hoechst = self._kopplung(l.zone_id).max_laufzeit_s
+                except LaufNichtMoeglich:
+                    hoechst = None                    # meldet _ausfuehren
+                if hoechst is not None and dauer_s > hoechst:
+                    dauer_s = abrunden(hoechst)       # Skalierung nie über Regel 8 hinaus
+                    text += "; auf Höchstlaufzeit begrenzt"
             await self._ausfuehren(l.zone_id, dauer_s, "PLAN", l.schluessel, text)
         finally:
             self._naechsten_starten()

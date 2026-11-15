@@ -9,6 +9,8 @@ Reihenfolge (Sicherheitsregel 6):
 3. Startprüfung: Steckdosen stoppen, Kopplungen prüfen, Zeitpläne pausieren, freigeben.
    Schlägt sie fehl, wird sie mit wachsendem Abstand wiederholt (API-Budget!).
 4. Erst danach: Scheduler und tägliche Erneuerung der Pause.
+
+Der Wetter-Dienst ruft ab Schritt 2 stündlich Open-Meteo und Bright Sky ab (ohne Gardena-Budget).
 """
 from __future__ import annotations
 
@@ -31,6 +33,8 @@ from .sicherheit.startpruefung import Pruefbericht, Startpruefung
 from .speicher.datenbank import Speicher
 from .speicher.ereignisse import SpeicherEreignisse
 from .systemd import SystemdMelder
+from .wetter.dienst import WetterDienst
+from .wetter.quellen import BrightSky, OpenMeteo
 
 log = logging.getLogger(__name__)
 
@@ -124,12 +128,14 @@ async def betreiben(konfig: Konfiguration, melder: SystemdMelder | None = None,
     if konfig.trockenlauf:
         log.warning("TROCKENLAUF: Befehle werden nur protokolliert (GARDENA_DRY_RUN=false zum echten Schalten)")
     b = bausteine_bauen(client, Geraetezustand(), SpeicherEreignisse(speicher), speicher.kopplungen)
-    scheduler = Scheduler(speicher, b.orchestrator)
+    wetter = WetterDienst(speicher, b.zustand, OpenMeteo(), BrightSky())
+    scheduler = Scheduler(speicher, b.orchestrator, wetter=wetter)
     b.interlock.starten()
     aufgaben.append(asyncio.create_task(
         WebSocketSchleife(client, b.zustand, budget, standort_id=konfig.standort_id).laufen(), name="websocket"))
+    aufgaben.append(asyncio.create_task(wetter.laufen(), name="wetter"))
     api = await api_starten(konfig, Kontext(speicher, b.zustand, b.orchestrator, scheduler,
-                                            konfig.api_token, konfig.trockenlauf))
+                                            konfig.api_token, konfig.trockenlauf, wetter))
     if api is not None:
         aufgaben.append(api)
     melder.bereit("Startprüfung läuft")
@@ -146,6 +152,7 @@ async def betreiben(konfig: Konfiguration, melder: SystemdMelder | None = None,
             a.cancel()
         b.interlock.anhalten()
         await client.schliessen()
+        await wetter.schliessen()
         speicher.schliessen()
 
 
