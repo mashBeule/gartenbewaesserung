@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+import json
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -90,7 +91,21 @@ CREATE TABLE einstellung (
 );
 """
 
-MIGRATIONEN = (SCHEMA, SCHEMA_2)          # Index + 1 = Schema-Version
+SCHEMA_3 = """
+CREATE TABLE plan_draft (
+    id INTEGER PRIMARY KEY,
+    erstellt TEXT NOT NULL,
+    status TEXT NOT NULL,            -- IN_ARBEIT, OFFEN, FEHLERHAFT, UEBERNOMMEN, VERWORFEN
+    saison INTEGER NOT NULL,
+    wuensche TEXT NOT NULL,
+    modell TEXT,
+    inhalt TEXT,                     -- JSON nach assistent.entwurf.SCHEMA
+    fehler TEXT,                     -- JSON-Liste
+    uebernommen TEXT                 -- JSON-Liste der übernommenen Zonen
+);
+"""
+
+MIGRATIONEN = (SCHEMA, SCHEMA_2, SCHEMA_3)          # Index + 1 = Schema-Version
 SCHEMA_VERSION = len(MIGRATIONEN)
 
 
@@ -103,6 +118,29 @@ class Zone:
     boden: str | None = None
     sonnenlage: str | None = None
     durchfluss_l_min: float | None = None
+
+
+@dataclass(frozen=True)
+class Entwurf:
+    id: int
+    erstellt: datetime
+    status: str
+    saison: int
+    wuensche: str
+    modell: str | None
+    inhalt: dict | None
+    fehler: list[str]
+    uebernommen: list[int]
+
+
+@dataclass(frozen=True)
+class Zonenstatistik:
+    zone_id: int
+    laeufe: int
+    minuten: float
+    wetter_ausgesetzt: int
+    manuell: int
+    abgebrochen: int
 
 
 @dataclass(frozen=True)
@@ -137,7 +175,7 @@ class Speicher:
             self.db.executescript("BEGIN;" + MIGRATIONEN[neu - 1] + f"PRAGMA user_version = {neu}; COMMIT;")
 
     @contextmanager
-    def _transaktion(self):
+    def transaktion(self):
         """Autocommit ist an (isolation_level=None); mehrere Schritte daher explizit klammern."""
         self.db.execute("BEGIN")
         try:
@@ -350,7 +388,7 @@ class Speicher:
         werte = asdict(regel)
         for feld in ("aktiv", "skalierung_aktiv"):
             werte[feld] = int(werte[feld])
-        with self._transaktion():
+        with self.transaktion():
             self.db.execute("DELETE FROM weather_policy WHERE IFNULL(zone_id, 0) = ?", (regel.zone_id or 0,))
             self._einfuegen("weather_policy", werte)
         return self.wetterregel(regel.zone_id)
@@ -374,6 +412,59 @@ class Speicher:
         return (float(breite), float(laenge)) if breite is not None and laenge is not None else None
 
     def standort_setzen(self, breite: float, laenge: float) -> None:
-        with self._transaktion():
+        with self.transaktion():
             self.einstellung_setzen("standort_breite", repr(float(breite)))
             self.einstellung_setzen("standort_laenge", repr(float(laenge)))
+
+    # --- Entwürfe (Claude) -------------------------------------------------
+
+    @staticmethod
+    def _entwurf(r: sqlite3.Row) -> Entwurf:
+        return Entwurf(
+            id=r["id"], erstellt=datetime.fromisoformat(r["erstellt"]), status=r["status"], saison=r["saison"],
+            wuensche=r["wuensche"], modell=r["modell"], inhalt=json.loads(r["inhalt"]) if r["inhalt"] else None,
+            fehler=json.loads(r["fehler"]) if r["fehler"] else [],
+            uebernommen=json.loads(r["uebernommen"]) if r["uebernommen"] else [])
+
+    def entwurf_anlegen(self, saison: int, wuensche: str) -> Entwurf:
+        return self.entwurf(self._einfuegen("plan_draft", {
+            "erstellt": datetime.now(timezone.utc).isoformat(), "status": "IN_ARBEIT",
+            "saison": saison, "wuensche": wuensche}))
+
+    def entwurf_aendern(self, id_: int, *, status: str | None = None, modell: str | None = None,
+                        inhalt: dict | None = None, fehler: list[str] | None = None,
+                        uebernommen: list[int] | None = None) -> None:
+        werte: dict = {}
+        if status is not None:
+            werte["status"] = status
+        if modell is not None:
+            werte["modell"] = modell
+        if inhalt is not None:
+            werte["inhalt"] = json.dumps(inhalt, ensure_ascii=False)
+        if fehler is not None:
+            werte["fehler"] = json.dumps(fehler, ensure_ascii=False)
+        if uebernommen is not None:
+            werte["uebernommen"] = json.dumps(uebernommen)
+        if werte:
+            self._aendern("plan_draft", id_, werte)
+
+    def entwurf(self, id_: int) -> Entwurf | None:
+        r = self.db.execute("SELECT * FROM plan_draft WHERE id = ?", (id_,)).fetchone()
+        return self._entwurf(r) if r else None
+
+    def entwuerfe(self) -> list[Entwurf]:
+        return [self._entwurf(r) for r in self.db.execute("SELECT * FROM plan_draft ORDER BY id DESC")]
+
+    def statistik(self, von: datetime, bis: datetime) -> list[Zonenstatistik]:
+        """Je Zone: Läufe mit Wasser, Minuten, Wetteraussetzer, manuelle und abgebrochene Läufe."""
+        zeilen = self.db.execute("""
+            SELECT zone_id,
+                   SUM(tatsaechlich_s > 0) AS laeufe,
+                   COALESCE(SUM(tatsaechlich_s), 0) / 60.0 AS minuten,
+                   SUM(status = 'UEBERSPRUNGEN_WETTER') AS wetter_ausgesetzt,
+                   SUM(grund = 'MANUELL') AS manuell,
+                   SUM(status = 'ABGEBROCHEN') AS abgebrochen
+            FROM run_log WHERE zone_id IS NOT NULL AND zeitpunkt >= ? AND zeitpunkt < ?
+            GROUP BY zone_id ORDER BY zone_id""", (von.isoformat(), bis.isoformat()))
+        return [Zonenstatistik(r["zone_id"], r["laeufe"] or 0, round(r["minuten"], 1), r["wetter_ausgesetzt"] or 0,
+                               r["manuell"] or 0, r["abgebrochen"] or 0) for r in zeilen]

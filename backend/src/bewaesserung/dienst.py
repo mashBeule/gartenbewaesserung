@@ -19,6 +19,8 @@ import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from .assistent.claude import ClaudeEntwerfer
+from .assistent.dienst import Assistent
 from .gardena.budget import ApiBudget
 from .gardena.client import Befehle, GardenaClient
 from .gardena.websocket import WebSocketSchleife
@@ -34,7 +36,7 @@ from .speicher.datenbank import Speicher
 from .speicher.ereignisse import SpeicherEreignisse
 from .systemd import SystemdMelder
 from .wetter.dienst import WetterDienst
-from .wetter.quellen import BrightSky, OpenMeteo
+from .wetter.quellen import BrightSky, Klima, OpenMeteo
 
 log = logging.getLogger(__name__)
 
@@ -130,12 +132,15 @@ async def betreiben(konfig: Konfiguration, melder: SystemdMelder | None = None,
     b = bausteine_bauen(client, Geraetezustand(), SpeicherEreignisse(speicher), speicher.kopplungen)
     wetter = WetterDienst(speicher, b.zustand, OpenMeteo(), BrightSky())
     scheduler = Scheduler(speicher, b.orchestrator, wetter=wetter)
+    # Bekommt bewusst weder Orchestrator noch Gardena-Client: Claude schaltet nie Geräte.
+    assistent = Assistent(speicher, ClaudeEntwerfer(konfig.claude_api_key, konfig.claude_modell)
+                          if konfig.claude_api_key else None, Klima())
     b.interlock.starten()
     aufgaben.append(asyncio.create_task(
         WebSocketSchleife(client, b.zustand, budget, standort_id=konfig.standort_id).laufen(), name="websocket"))
     aufgaben.append(asyncio.create_task(wetter.laufen(), name="wetter"))
     api = await api_starten(konfig, Kontext(speicher, b.zustand, b.orchestrator, scheduler,
-                                            konfig.api_token, konfig.trockenlauf, wetter))
+                                            konfig.api_token, konfig.trockenlauf, wetter, assistent))
     if api is not None:
         aufgaben.append(api)
     melder.bereit("Startprüfung läuft")
@@ -153,6 +158,7 @@ async def betreiben(konfig: Konfiguration, melder: SystemdMelder | None = None,
         b.interlock.anhalten()
         await client.schliessen()
         await wetter.schliessen()
+        await assistent.schliessen()
         speicher.schliessen()
 
 

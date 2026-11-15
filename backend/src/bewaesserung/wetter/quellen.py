@@ -93,3 +93,42 @@ class BrightSky:
             "date": von.isoformat(), "last_date": jetzt.isoformat(), "tz": "UTC"})
         antwort.raise_for_status()
         return bright_sky_lesen(antwort.json(), jetzt)
+
+
+# --- Klima der Vorsaison (für den Claude-Assistenten) -----------------------------
+
+MONATE = ("Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez")
+
+
+def klima_lesen(daten: dict) -> list[dict]:
+    """Tageswerte des Open-Meteo-Archivs zu Monatswerten: ET₀- und Regensumme, mittleres Tagesmaximum."""
+    tage = daten["daily"]
+    monate: dict[str, dict] = {}
+    for i, tag in enumerate(tage["time"]):
+        m = monate.setdefault(tag[:7], {"et0": [], "regen": [], "tmax": []})
+        for schluessel, spalte in (("et0", "et0_fao_evapotranspiration"), ("regen", "precipitation_sum"),
+                                   ("tmax", "temperature_2m_max")):
+            wert = _zahl((tage.get(spalte) or [None] * (i + 1))[i])
+            if wert is not None:
+                m[schluessel].append(wert)
+    return [{"monat": f"{MONATE[int(k[5:7]) - 1]} {k[:4]}",
+             "et0_mm": round(sum(v["et0"]), 1), "regen_mm": round(sum(v["regen"]), 1),
+             "tmax_mittel_c": round(sum(v["tmax"]) / len(v["tmax"]), 1) if v["tmax"] else None}
+            for k, v in sorted(monate.items())]
+
+
+class Klima:
+    """Open-Meteo-Archiv: Monatswerte April bis Oktober eines vergangenen Jahres."""
+    URL = "https://archive-api.open-meteo.com/v1/archive"
+
+    def __init__(self, http: httpx.AsyncClient | None = None) -> None:
+        self.http = http or httpx.AsyncClient(timeout=TIMEOUT_S)
+
+    async def vorsaison(self, breite: float, laenge: float, jahr: int) -> list[dict]:
+        antwort = await self.http.get(self.URL, params={
+            "latitude": round(breite, 2), "longitude": round(laenge, 2),
+            "start_date": f"{jahr}-04-01", "end_date": f"{jahr}-10-31",
+            "daily": "et0_fao_evapotranspiration,precipitation_sum,temperature_2m_max",
+            "timezone": "Europe/Berlin"})
+        antwort.raise_for_status()
+        return klima_lesen(antwort.json())

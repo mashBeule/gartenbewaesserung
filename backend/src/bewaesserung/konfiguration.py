@@ -28,6 +28,8 @@ class Konfiguration:
     api_token: str | None
     api_host: str
     api_port: int
+    claude_api_key: str | None = None
+    claude_modell: str = "claude-sonnet-5-5"
 
     @classmethod
     def aus_umgebung(cls, env: Mapping[str, str] = os.environ) -> "Konfiguration":
@@ -42,6 +44,9 @@ class Konfiguration:
             # Nie 0.0.0.0: nur localhost oder die Tailscale-Adresse des Pi (100.x.y.z)
             api_host=env.get("BEWAESSERUNG_API_HOST", "127.0.0.1"),
             api_port=int(env.get("BEWAESSERUNG_API_PORT", "8080")),
+            # Optional: ohne Schlüssel gibt es keine Saisonplan-Entwürfe, sonst läuft alles
+            claude_api_key=env.get("ANTHROPIC_API_KEY") or None,
+            claude_modell=env.get("CLAUDE_MODELL") or "claude-sonnet-5-5",
         )
 
     @property

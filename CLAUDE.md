@@ -17,6 +17,7 @@ Gardena-API-Notizen: `docs/gardena-api.md`.
 | `backend/src/bewaesserung/planung/` | Regeln → Läufe (`plan.py`), Scheduler |
 | `backend/src/bewaesserung/speicher/` | SQLite (Zonen, Kopplungen, Regeln, Ausnahmen, Wetterregeln, Einstellungen, run_log) |
 | `backend/src/bewaesserung/wetter/` | Open-Meteo, Bright Sky, Entscheidung je Termin (`entscheidung.py`, reine Logik), Dienst mit stündlichem Abruf |
+| `backend/src/bewaesserung/assistent/` | Claude-Assistent: Schema und Prüfung (`entwurf.py`, reine Logik), API-Aufruf (`claude.py`), Ablauf (`dienst.py`) – ohne Zugriff auf Geräte |
 | `backend/src/bewaesserung/api/` | REST-API für die App (FastAPI, Token) |
 | `backend/tests/` | pytest, Sicherheitstests laufen gegen den Gardena-Mock (`tests/gardena_mock.py`) |
 | `deploy/systemd/` | `bewaesserung.service` (Type=notify, Restart=always, WatchdogSec=60) |
@@ -34,7 +35,7 @@ Details zum Image: `deploy/README.md`. Abweichungen vom Plan: `docs/entscheidung
   Abgesichert ist nur, dass ein laufender Lauf von selbst endet und die Pumpe vor dem Ventil abschaltet.
 - Zugangsdaten (Gardena Application Key/Secret, Claude-API-Key, Tailscale) **nie im Image
   oder Repo**; Eingabe über die Einrichtungsseite beim ersten Start.
-- Claude API (Sonnet) erzeugt nur Saisonplan-Entwürfe per Tool-Aufruf mit JSON-Schema;
+- Claude API (Sonnet) erzeugt nur Saisonplan-Entwürfe mit festem JSON-Schema (structured outputs, keine Werkzeuge);
   Freigabe in der App; **Claude schaltet nie Geräte.**
 - Wetter: Open-Meteo (Prognose, ET0), Bright Sky (DWD-Messwerte), Gardena-Bodensensor.
 - Kein offener Port im Internet, Zugriff von unterwegs nur über Tailscale.
@@ -102,9 +103,11 @@ Scheduler mit Nachholfenster, Not-Aus, REST-API mit Token, Sicherheitsereignisse
 Wetter (Phase 4): Open-Meteo und Bright Sky stündlich, Bodensensor aus dem WebSocket, Regeln 1–5 des
 Plans in `wetter/entscheidung.py`, `weather_policy` global und je Zone, Vorschau im Kalender,
 Endpunkte `/wetter`, `/wetterregeln`, `/einstellungen/standort`.
+Claude-Assistent (Phase 5): Entwurf mit festem Schema, Prüfung (Regel 8, Zeitfenster, Überschneidungen,
+Tagessumme), ein zweiter Versuch, Kalenderansicht, Übernahme je Zone mit `quelle=CLAUDE`, Endpunkte `/entwuerfe`.
+Ein Test stellt sicher, dass `assistent/` nichts importiert, was schaltet.
 
 Als Nächstes (Rest von Aufgabe 5):
-- Claude-Assistent (Phase 5): Saisonplan-Entwurf, Validierung, Regeln mit `quelle=CLAUDE`.
 - Einrichtungsseite (`deploy/firstboot`), Push-Meldungen (ntfy).
 - Android-App (Phase 3), spricht die API unter `/openapi.json`.
 

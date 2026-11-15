@@ -11,6 +11,10 @@ lehnt die API schon beim Speichern einer Regel ab (Regel 8).
 Wetter: `/wetter` (aktuelle Lage), `/wetterregeln` (global und je Zone), `/einstellungen/standort`.
 Im Kalender (`/plan`) tragen Termine der nächsten 24 h die voraussichtliche Wetterentscheidung,
 vergangene Termine ihren Status aus dem Verlauf.
+
+Claude-Assistent: `/entwuerfe` erstellt Saisonplan-Entwürfe im Hintergrund (Status abfragen),
+`/entwuerfe/{id}/plan` zeigt sie im Kalender, `/entwuerfe/{id}/uebernehmen` legt Regeln an.
+Claude schaltet nie: Entwürfe werden nur durch die Freigabe hier zu Regeln.
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ from datetime import date, datetime, time, timedelta
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from ..assistent.dienst import Assistent, EntwurfNichtMoeglich
 from ..gardena.modelle import GeraeteTyp
 from ..gardena.zustand import Geraetezustand
 from ..planung.plan import Ausnahme, AusnahmeAktion, Quelle, Regel
@@ -45,6 +50,7 @@ class Kontext:
     token: str | None
     trockenlauf: bool = True
     wetter: WetterDienst | None = None
+    assistent: Assistent | None = None
 
 
 # --- Modelle -------------------------------------------------------------
@@ -141,6 +147,31 @@ class WetterRegelEin(BaseModel):
     referenz_et0_mm_tag: float = 4.0
     faktor_min: float = 0.3
     faktor_max: float = 1.5
+
+
+class EntwurfEin(BaseModel):
+    wuensche: str = Field(default="", max_length=2000, description="z. B. „Rasen neu angelegt“, „ab Juli drei Wochen Urlaub“")
+    saison: int | None = Field(default=None, ge=2024, le=2100, description="Standard: laufendes Jahr bis August, sonst das nächste")
+
+
+class EntwurfAus(BaseModel):
+    id: int
+    erstellt: datetime
+    status: str = Field(description="IN_ARBEIT, OFFEN, FEHLERHAFT, UEBERNOMMEN, VERWORFEN")
+    saison: int
+    wuensche: str
+    modell: str | None
+    inhalt: dict | None
+    fehler: list[str]
+    uebernommen: list[int]
+
+
+class UebernehmenEin(BaseModel):
+    zone_ids: list[int] | None = Field(default=None, description="None = alle Zonen des Entwurfs")
+
+
+class UebernommenAus(BaseModel):
+    regel_ids: list[int]
 
 
 class StandortEin(BaseModel):
@@ -461,6 +492,66 @@ def app_bauen(k: Kontext) -> FastAPI:
         """Zone fällt auf die globale Regel zurück."""
         if not k.speicher.wetterregel_loeschen(zone_id):
             raise nicht_gefunden("Wetterregel")
+
+    # --- Claude-Assistent ------------------------------------------------
+
+    def assistent() -> Assistent:
+        if k.assistent is None or not k.assistent.verfuegbar:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                                "Claude-Assistent nicht eingerichtet (ANTHROPIC_API_KEY fehlt)")
+        return k.assistent
+
+    def entwurf_holen(entwurf_id: int):
+        e = k.speicher.entwurf(entwurf_id)
+        if e is None:
+            raise nicht_gefunden("Entwurf")
+        return e
+
+    @app.get("/entwuerfe", response_model=list[EntwurfAus], dependencies=geschuetzt)
+    async def entwuerfe():
+        return [EntwurfAus(**asdict(e)) for e in k.speicher.entwuerfe()]
+
+    @app.post("/entwuerfe", response_model=EntwurfAus, status_code=202, dependencies=geschuetzt)
+    async def entwurf_starten(e: EntwurfEin):
+        try:
+            return EntwurfAus(**asdict(assistent().starten(e.wuensche, e.saison)))
+        except EntwurfNichtMoeglich as f:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(f))
+
+    @app.get("/entwuerfe/{entwurf_id}", response_model=EntwurfAus, dependencies=geschuetzt)
+    async def entwurf(entwurf_id: int):
+        return EntwurfAus(**asdict(entwurf_holen(entwurf_id)))
+
+    @app.get("/entwuerfe/{entwurf_id}/plan", response_model=list[LaufAus], dependencies=geschuetzt)
+    async def entwurf_plan(entwurf_id: int, von: date, bis: date):
+        """Termine des Entwurfs für den Kalender (regel_id negativ = Regel aus dem Entwurf)."""
+        entwurf_holen(entwurf_id)
+        if bis < von or (bis - von) > timedelta(days=MAX_PLAN_TAGE):
+            raise ungueltig(f"Zeitraum muss 0 bis {MAX_PLAN_TAGE} Tage umfassen")
+        if k.assistent is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Claude-Assistent läuft nicht")
+        return [LaufAus(**asdict(l)) for l in k.assistent.plan(entwurf_id, von, bis)]
+
+    @app.post("/entwuerfe/{entwurf_id}/uebernehmen", response_model=UebernommenAus, dependencies=geschuetzt)
+    async def entwurf_uebernehmen(entwurf_id: int, u: UebernehmenEin):
+        entwurf_holen(entwurf_id)
+        if k.assistent is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Claude-Assistent läuft nicht")
+        try:
+            return UebernommenAus(regel_ids=k.assistent.uebernehmen(entwurf_id, u.zone_ids))
+        except EntwurfNichtMoeglich as f:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(f))
+
+    @app.post("/entwuerfe/{entwurf_id}/verwerfen", response_model=EntwurfAus, dependencies=geschuetzt)
+    async def entwurf_verwerfen(entwurf_id: int):
+        entwurf_holen(entwurf_id)
+        if k.assistent is None:
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Claude-Assistent läuft nicht")
+        try:
+            k.assistent.verwerfen(entwurf_id)
+        except EntwurfNichtMoeglich as f:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(f))
+        return EntwurfAus(**asdict(entwurf_holen(entwurf_id)))
 
     # --- Schalten --------------------------------------------------------
 

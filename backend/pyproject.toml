@@ -12,6 +12,7 @@ dependencies = [
     "websockets>=12",
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "anthropic>=2.8",
     "tzdata; sys_platform == 'win32'",
 ]
 
