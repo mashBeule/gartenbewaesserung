@@ -1,0 +1,42 @@
+[Unit]
+Description=Bewässerungssteuerung (Gardena smart system)
+Documentation=https://github.com/mashBeule/gartenbewaesserung
+# Erst starten, wenn Netz und Uhrzeit stehen (Zeitpläne, Sommerzeit)
+Wants=network-online.target time-sync.target
+After=network-online.target time-sync.target
+# Nie aufgeben: nach jedem Absturz neu starten
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=bewaesserung
+Group=bewaesserung
+ExecStart=/opt/bewaesserung/venv/bin/python -m bewaesserung
+Restart=always
+RestartSec=10
+# Der Dienst meldet sich alle 30 s; bleibt das aus, startet systemd ihn neu.
+WatchdogSec=60
+TimeoutStartSec=120
+
+# Zugangsdaten nur hier (root:root, 0600), nie im Image. Fehlt die Datei, wartet der Dienst.
+EnvironmentFile=-/etc/bewaesserung/zugang.env
+Environment=BEWAESSERUNG_DATEN=/var/lib/bewaesserung
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=bewaesserung
+StateDirectoryMode=0750
+
+# Härtung
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

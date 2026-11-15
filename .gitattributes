@@ -1,0 +1,4 @@
+# Skripte und Dateien fürs Pi-Image immer mit LF, auch bei Checkout unter Windows
+*.sh text eol=lf
+*.service text eol=lf
+deploy/** text eol=lf

@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Geheimnisse und Laufzeitdaten
+.env
+*.sqlite3
+backend/data/
+
+# pi-gen
+deploy/pi-gen/work/
+deploy/pi-gen/deploy/
+*.img
+*.img.xz
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+*.keystore
+
+# Von deploy/pi-gen/vorbereiten.sh erzeugt
+deploy/pi-gen/stage-bewaesserung/01-anwendung/files/

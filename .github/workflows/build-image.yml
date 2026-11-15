@@ -1,0 +1,74 @@
+# Tests bei jedem Push und Pull Request. Pi-Image (64 Bit, Raspberry Pi OS Lite trixie)
+# bei jedem Stand auf main und auf Wunsch; bei einem Tag v* zusätzlich als Release-Asset.
+name: Tests und Pi-Image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"   # wie Raspberry Pi OS trixie
+      - name: Backend installieren
+        run: pip install -e "backend[dev]"
+      - name: Tests
+        working-directory: backend
+        run: python -m pytest -q
+
+  image:
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write   # für das Release-Asset bei Tags
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pi-gen-Stufe vorbereiten
+        run: bash deploy/pi-gen/vorbereiten.sh
+
+      - name: Image bauen
+        id: build
+        uses: usimd/pi-gen-action@v1
+        with:
+          image-name: bewaesserung
+          pi-gen-version: arm64
+          release: trixie
+          stage-list: stage0 stage1 stage2 ./deploy/pi-gen/stage-bewaesserung
+          hostname: bewaesserung
+          locale: de_DE.UTF-8
+          timezone: Europe/Berlin
+          keyboard-keymap: de
+          keyboard-layout: German
+          wpa-country: DE
+          # Benutzer, Passwort, WLAN und SSH setzt der Raspberry Pi Imager (cloud-init),
+          # nie dieser Workflow.
+          enable-cloud-init: 1
+          compression: xz
+          increase-runner-disk-size: true
+
+      - name: Image als Artefakt ablegen
+        uses: actions/upload-artifact@v4
+        with:
+          name: bewaesserung-image
+          path: ${{ steps.build.outputs.image-path }}
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Release-Asset (nur bei Tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.build.outputs.image-path }}
