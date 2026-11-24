@@ -124,6 +124,8 @@ async def betreiben(konfig: Konfiguration, melder: SystemdMelder | None = None,
 
     from .api.app import Kontext
     speicher = Speicher(konfig.datenbank)
+    if konfig.standort_start and speicher.standort() is None:
+        speicher.standort_setzen(*konfig.standort_start)
     budget = ApiBudget.aus_datei(konfig.datenordner / "api-budget.json")
     client = GardenaClient(konfig.application_key, konfig.application_secret, budget,
                            dry_run=konfig.trockenlauf)

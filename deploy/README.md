@@ -3,10 +3,10 @@
 | Datei | Zweck |
 | --- | --- |
 | `systemd/bewaesserung.service` | Dienst: `Type=notify`, `Restart=always`, `WatchdogSec=60`, startet nach Netz und Zeitsynchronisierung |
+| `systemd/bewaesserung-einrichtung.service` | Einrichtungsseite im Heimnetz, läuft nur solange `zugang.env` fehlt |
 | `systemd/zugang.env.beispiel` | Vorlage für `/etc/bewaesserung/zugang.env` (root, 0600) |
 | `pi-gen/vorbereiten.sh` | kopiert Backend und Unit in die Stufe; vor jedem Build ausführen |
 | `pi-gen/stage-bewaesserung/` | eigene pi-gen-Stufe nach `stage2` (Raspberry Pi OS Lite) |
-| `firstboot/` | Einrichtungsseite für Zugangsdaten – **noch offen** |
 | `../.github/workflows/build-image.yml` | Tests, Image-Build mit `usimd/pi-gen-action@v1`, Release-Asset bei Tag `v*` |
 
 ## Was im Image steckt
@@ -20,22 +20,22 @@
 - Tailscale installiert, **nicht angemeldet**. log2ram installiert.
 - **Keine Zugangsdaten.** Benutzer, Passwort, WLAN und SSH setzt der Raspberry Pi Imager.
 
-## Erster Start (bis die Einrichtungsseite fertig ist)
+## Erster Start
 
 1. Image mit dem Raspberry Pi Imager flashen, dabei Benutzer, WLAN und SSH einstellen.
-2. Per SSH anmelden, Zugangsdaten eintragen:
-   `sudo cp /etc/bewaesserung/zugang.env.beispiel /etc/bewaesserung/zugang.env`,
-   Werte eintragen, `sudo chmod 600 /etc/bewaesserung/zugang.env`.
-   Für die App zusätzlich `BEWAESSERUNG_API_TOKEN` (z. B. `openssl rand -hex 24`) und
-   `BEWAESSERUNG_API_HOST` = Tailscale-Adresse des Pi (`tailscale ip -4`).
-3. `sudo tailscale up`, dann `sudo systemctl restart bewaesserung`.
-   Die API ist danach nur über Tailscale erreichbar: `http://<tailscale-ip>:8080/status`
-   mit `Authorization: Bearer <Token>`; Beschreibung unter `/openapi.json`.
-4. Standort für das Wetter setzen (bis die App das kann):
-   `curl -X PUT -H "Authorization: Bearer <Token>" -H "Content-Type: application/json" -d '{"breite": 51.1, "laenge": 13.6}' http://<tailscale-ip>:8080/einstellungen/standort`.
-   Ohne Standort laufen alle Termine ohne Wetteranpassung.
+2. Pi starten und im Heimnetz **http://bewaesserung.local** öffnen (Einrichtungsseite, `bewaesserung/einrichtung/`):
+   - Gardena Application Key und Secret (Pflicht, werden bei Husqvarna geprüft),
+   - optional Tailscale-Auth-Key (sonst zeigt die Seite einen Anmelde-Link),
+   - optional Standort für das Wetter und Claude-API-Schlüssel.
+3. Die Seite schreibt `/etc/bewaesserung/zugang.env` (root, 0600), erzeugt das API-Token für die App,
+   meldet Tailscale an und startet den Dienst neu. Das Token zeigt sie nur dem Browser, der das Formular
+   abgeschickt hat, und nur dieses eine Mal: notieren. Mit „Fertig“ geht die Seite aus und startet nicht wieder.
+4. Die App spricht danach `http://<tailscale-ip>:8080` mit `Authorization: Bearer <Token>` an.
 5. Prüfen: `systemctl status bewaesserung` zeigt den Status („Startprüfung läuft“, „Bereit …“),
    `journalctl -u bewaesserung -f` die Meldungen.
+
+Erneut einrichten: `sudo rm /etc/bewaesserung/zugang.env && sudo systemctl start bewaesserung-einrichtung`.
+Von Hand geht es weiterhin per SSH mit der Vorlage `zugang.env.beispiel`.
 
 Ohne `zugang.env` läuft der Dienst, meldet „Warte auf Zugangsdaten“ und schaltet nichts.
 Standard ist Trockenlauf (`GARDENA_DRY_RUN=true`): Befehle werden nur protokolliert.
@@ -49,4 +49,6 @@ Der Image-Build ist noch nie gelaufen (erst nach dem ersten Push auf GitHub). Zu
   und log2ram (`packages.azlux.fr/debian trixie`)?
 - Übernimmt das Image die Einstellungen des Raspberry Pi Imagers (cloud-init)? Ohne sie ist das
   Konto `pi` gesperrt bzw. der Einrichtungsassistent startet.
+- Ist die Einrichtungsseite unter `bewaesserung.local` erreichbar (avahi), und liefert `tailscale up` den
+  Anmelde-Link so, wie `einrichtung/system.py` ihn sucht?
 - Startet der Dienst auf dem Pi und hält der Watchdog (`systemctl show bewaesserung -p WatchdogUSec`)?

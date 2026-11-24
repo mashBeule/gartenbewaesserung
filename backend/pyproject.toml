@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 bewaesserung = "bewaesserung.dienst:main"
+bewaesserung-einrichtung = "bewaesserung.einrichtung.server:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

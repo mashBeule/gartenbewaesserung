@@ -1,0 +1,29 @@
+[Unit]
+Description=Bewässerung: Einrichtungsseite (nur bis die Zugangsdaten eingetragen sind)
+Documentation=https://github.com/mashBeule/gartenbewaesserung
+# Läuft nur, solange es keine Zugangsdaten gibt. Erneut einrichten:
+#   sudo rm /etc/bewaesserung/zugang.env && sudo systemctl start bewaesserung-einrichtung
+ConditionPathExists=!/etc/bewaesserung/zugang.env
+Wants=network-online.target
+After=network-online.target tailscaled.service
+
+[Service]
+Type=simple
+# root nötig: schreibt /etc/bewaesserung/zugang.env, ruft `tailscale up` und `systemctl restart bewaesserung`.
+ExecStart=/opt/bewaesserung/venv/bin/bewaesserung-einrichtung
+Environment=PYTHONUNBUFFERED=1
+# Nach „Fertig“ beendet sich die Seite mit Code 0 und bleibt aus.
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/bewaesserung -/run/tailscale
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

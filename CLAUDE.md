@@ -20,9 +20,9 @@ Gardena-API-Notizen: `docs/gardena-api.md`.
 | `backend/src/bewaesserung/assistent/` | Claude-Assistent: Schema und Prüfung (`entwurf.py`, reine Logik), API-Aufruf (`claude.py`), Ablauf (`dienst.py`) – ohne Zugriff auf Geräte |
 | `backend/src/bewaesserung/api/` | REST-API für die App (FastAPI, Token) |
 | `backend/tests/` | pytest, Sicherheitstests laufen gegen den Gardena-Mock (`tests/gardena_mock.py`) |
-| `deploy/systemd/` | `bewaesserung.service` (Type=notify, Restart=always, WatchdogSec=60) |
+| `deploy/systemd/` | `bewaesserung.service` (Type=notify, Restart=always, WatchdogSec=60), `bewaesserung-einrichtung.service` |
 | `deploy/pi-gen/` | eigene Stufe `stage-bewaesserung`, vorher `vorbereiten.sh` ausführen |
-| `deploy/firstboot/` | Einrichtungsseite für Zugangsdaten – noch leer |
+| `backend/src/bewaesserung/einrichtung/` | Einrichtungsseite beim ersten Start (eigener Dienst als root, nur bis `zugang.env` existiert) |
 | `.github/workflows/` | `build-image.yml` (Tests, pi-gen-Build, .img als Release-Asset bei Tag `v*`) |
 | `android/` | später: Kotlin/Compose-App |
 
@@ -106,9 +106,11 @@ Endpunkte `/wetter`, `/wetterregeln`, `/einstellungen/standort`.
 Claude-Assistent (Phase 5): Entwurf mit festem Schema, Prüfung (Regel 8, Zeitfenster, Überschneidungen,
 Tagessumme), ein zweiter Versuch, Kalenderansicht, Übernahme je Zone mit `quelle=CLAUDE`, Endpunkte `/entwuerfe`.
 Ein Test stellt sicher, dass `assistent/` nichts importiert, was schaltet.
+Einrichtungsseite (Phase 7): Gardena-Zugang prüfen, `zugang.env` schreiben (Trockenlauf bleibt an),
+API-Token erzeugen, Tailscale anmelden, Standort übernehmen.
 
 Als Nächstes (Rest von Aufgabe 5):
-- Einrichtungsseite (`deploy/firstboot`), Push-Meldungen (ntfy).
+- Push-Meldungen (ntfy).
 - Android-App (Phase 3), spricht die API unter `/openapi.json`.
 
 In Phase 0 am echten System klären: siehe ⚠ in `docs/gardena-api.md`.

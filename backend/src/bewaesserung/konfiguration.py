@@ -18,6 +18,14 @@ WAHR = {"1", "true", "ja", "yes", "on"}
 MIN_TOKEN_LAENGE = 24
 
 
+def _standort(wert: str | None) -> tuple[float, float] | None:
+    try:
+        breite, laenge = (float(t) for t in (wert or "").split(","))
+    except ValueError:
+        return None
+    return (breite, laenge) if -90 <= breite <= 90 and -180 <= laenge <= 180 else None
+
+
 @dataclass(frozen=True)
 class Konfiguration:
     application_key: str | None
@@ -30,6 +38,7 @@ class Konfiguration:
     api_port: int
     claude_api_key: str | None = None
     claude_modell: str = "claude-sonnet-5-5"
+    standort_start: tuple[float, float] | None = None
 
     @classmethod
     def aus_umgebung(cls, env: Mapping[str, str] = os.environ) -> "Konfiguration":
@@ -47,6 +56,8 @@ class Konfiguration:
             # Optional: ohne Schlüssel gibt es keine Saisonplan-Entwürfe, sonst läuft alles
             claude_api_key=env.get("ANTHROPIC_API_KEY") or None,
             claude_modell=env.get("CLAUDE_MODELL") or "claude-sonnet-5-5",
+            # Von der Einrichtungsseite; gilt nur, solange in der Datenbank noch kein Standort steht
+            standort_start=_standort(env.get("BEWAESSERUNG_STANDORT")),
         )
 
     @property

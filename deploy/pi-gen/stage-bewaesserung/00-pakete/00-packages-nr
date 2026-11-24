@@ -3,3 +3,4 @@ python3-venv
 ca-certificates
 curl
 gnupg
+avahi-daemon
